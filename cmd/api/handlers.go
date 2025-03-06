@@ -1,12 +1,19 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
+	"fmt"
 	"github.com/go-chi/chi/v5"
 	"github.com/golang-jwt/jwt/v5"
+	"go-movies-back-end/internal/graph"
 	"go-movies-back-end/internal/models"
+	"io"
+	"log"
 	"net/http"
+	"net/url"
 	"strconv"
+	"time"
 )
 
 func (app *application) Home(w http.ResponseWriter, r *http.Request) {
@@ -182,4 +189,201 @@ func (app *application) MovieForEdit(w http.ResponseWriter, r *http.Request) {
 	}
 
 	_ = app.writeJSON(w, http.StatusOK, payload)
+}
+
+func (app *application) AllGenres(w http.ResponseWriter, r *http.Request) {
+	genres, err := app.DB.AllGenres()
+	if err != nil {
+		app.errorJSON(w, err)
+		return
+	}
+
+	app.writeJSON(w, http.StatusOK, genres)
+}
+
+func (app *application) InsertMovie(w http.ResponseWriter, r *http.Request) {
+	var movie models.Movie
+
+	err := app.readJSON(w, r, &movie)
+	if err != nil {
+		app.errorJSON(w, err)
+		return
+	}
+
+	// try to get an image
+	movie = app.getPoster(movie)
+	movie.CreatedAt = time.Now()
+	movie.UpdatedAt = time.Now()
+
+	newID, err := app.DB.InsertMovie(movie)
+	if err != nil {
+		app.errorJSON(w, err)
+		return
+	}
+
+	// now handle genres
+	err = app.DB.UpdateMovieGenres(newID, movie.GenresArray)
+	if err != nil {
+		app.errorJSON(w, err)
+		return
+	}
+
+	response := JSONResponse{
+		Error:   false,
+		Message: "movie updated",
+	}
+
+	app.writeJSON(w, http.StatusAccepted, response)
+}
+
+func (app *application) getPoster(movie models.Movie) models.Movie {
+	type TheMovieDB struct {
+		Page    int `json:"page"`
+		Results []struct {
+			PosterPath string `json:"poster_path"`
+		} `json:"results"`
+		TotalPages int `json:"total_pages"`
+	}
+
+	client := &http.Client{}
+	theUrl := fmt.Sprintf("https://api.themoviedb.org/3/search/movie?api_key=%s", app.APIKey)
+
+	req, err := http.NewRequest("GET", theUrl+"&query="+url.QueryEscape(movie.Title), nil)
+	if err != nil {
+		log.Println(err)
+		return movie
+	}
+
+	req.Header.Add("Accept", "application/json")
+	req.Header.Add("Content-Type", "application/json")
+
+	response, err := client.Do(req)
+	if err != nil {
+		log.Println(err)
+		return movie
+	}
+	defer response.Body.Close()
+
+	bodyBytes, err := io.ReadAll(response.Body)
+	if err != nil {
+		log.Println(err)
+		return movie
+	}
+
+	var responseObject TheMovieDB
+
+	json.Unmarshal(bodyBytes, &responseObject)
+
+	if len(responseObject.Results) > 0 {
+		movie.Image = responseObject.Results[0].PosterPath
+	}
+
+	return movie
+}
+
+func (app *application) UpdateMovie(w http.ResponseWriter, r *http.Request) {
+	var payload models.Movie
+
+	err := app.readJSON(w, r, &payload)
+	if err != nil {
+		app.errorJSON(w, err)
+		return
+	}
+
+	movie, err := app.DB.OneMovie(payload.ID)
+	if err != nil {
+		app.errorJSON(w, err)
+		return
+	}
+
+	movie.Title = payload.Title
+	movie.ReleaseDate = payload.ReleaseDate
+	movie.RunTime = payload.RunTime
+	movie.MPAARating = payload.MPAARating
+	movie.Description = payload.Description
+	movie.UpdatedAt = time.Now()
+
+	err = app.DB.UpdateMovie(*movie)
+	if err != nil {
+		app.errorJSON(w, err)
+		return
+	}
+
+	err = app.DB.UpdateMovieGenres(movie.ID, payload.GenresArray)
+	if err != nil {
+		app.errorJSON(w, err)
+		return
+	}
+
+	response := JSONResponse{
+		Error:   false,
+		Message: "movie updated",
+	}
+
+	app.writeJSON(w, http.StatusAccepted, response)
+}
+
+func (app *application) DeleteMovie(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.Atoi(chi.URLParam(r, "id"))
+	if err != nil {
+		app.errorJSON(w, err)
+		return
+	}
+
+	err = app.DB.DeleteMovie(id)
+	if err != nil {
+		app.errorJSON(w, err)
+		return
+	}
+
+	response := JSONResponse{
+		Error:   false,
+		Message: "movie deleted",
+	}
+
+	app.writeJSON(w, http.StatusAccepted, response)
+}
+
+func (app *application) AllMoviesByGenre(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.Atoi(chi.URLParam(r, "id"))
+	if err != nil {
+		app.errorJSON(w, err)
+		return
+	}
+
+	movies, err := app.DB.AllMovies(id)
+	if err != nil {
+		app.errorJSON(w, err)
+		return
+	}
+
+	app.writeJSON(w, http.StatusOK, movies)
+}
+
+func (app *application) moviesGraphQL(w http.ResponseWriter, r *http.Request) {
+	// we need to populate our Graph type with the movies
+	movies, _ := app.DB.AllMovies()
+
+	// get the query from the request
+	q, _ := io.ReadAll(r.Body)
+	query := string(q)
+
+	// create a new variable of type *graph.Graph
+	g := graph.New(movies)
+
+	// set the query string on the variable
+	g.QueryString = query
+
+	// perform the query
+	response, err := g.Query()
+	if err != nil {
+		app.errorJSON(w, err)
+		return
+	}
+
+	// send the response
+	j, _ := json.MarshalIndent(response, "", "\t")
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	w.Write(j)
 }

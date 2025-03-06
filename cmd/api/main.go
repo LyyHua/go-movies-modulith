@@ -7,6 +7,7 @@ import (
 	"go-movies-back-end/internal/repository/dbrepo"
 	"log"
 	"net/http"
+	"os"
 	"time"
 )
 
@@ -21,11 +22,13 @@ type application struct {
 	JWTIssuer    string
 	JWTAudience  string
 	CookieDomain string
+	APIKey       string
 }
 
 func main() {
 	// set application config
 	var app application
+	app.APIKey = os.Getenv("API_KEY")
 
 	// read from command line
 	flag.StringVar(&app.DSN, "dsn", "host=localhost port=5432 user=postgres password=postgres dbname=movies sslmode=disable timezone=UTC connect_timeout=5", "Postgres connection string")
@@ -34,6 +37,8 @@ func main() {
 	flag.StringVar(&app.JWTAudience, "jwt-audience", "example.com", "signing audience")
 	flag.StringVar(&app.CookieDomain, "cookie-domain", "localhost", "cookie domain")
 	flag.StringVar(&app.Domain, "domain", "example.com", "domain")
+	// If you don't public your code put the api-key below. I have my on public so i put it in cmd
+	//flag.StringVar(&app.APIKey, "api-key", "your-api-key-value", "api key")
 	flag.Parse()
 
 	// connect to the database
